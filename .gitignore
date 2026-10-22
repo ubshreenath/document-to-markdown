@@ -7,4 +7,5 @@ Thumbs.db
 # Test output from running the skill inside this repo
 extracted/
 *_assets/
+*_pages/
 .doc-to-markdown-log.json
