@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+Thumbs.db
+
+# Test output from running the skill inside this repo
+extracted/
+*_assets/
+.doc-to-markdown-log.json
