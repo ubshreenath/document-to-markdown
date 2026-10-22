@@ -33,6 +33,7 @@ FIGURE_MIN_PAGE_SHARE = 0.10  # pictures smaller than this share of a page are d
 FIGURE_MIN_PIXELS = 150       # fallback when the page size is unknown (docx, html)
 CONVERT_TIMEOUT_SECONDS = 900
 VISION_TIMEOUT_SECONDS = 180
+VISION_ATTEMPTS = 3  # per page, for timeouts and dropped connections
 IMAGE_LINK = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 
 # Any OpenAI-compatible /chat/completions endpoint works; these are only shortcuts.
@@ -65,10 +66,18 @@ VISION_PROMPT = (
 TRANSCRIBE_PROMPT = (
     "This image is one page of a document. Transcribe it to Markdown: every heading, paragraph, list, "
     "table and label, verbatim and in reading order, using Markdown headings, lists and tables. Keep "
-    "side-by-side boxes or columns as separate sections, each under its own label. Keep a document title, "
-    "version, date or classification the first time it appears, but leave out page numbers and running "
-    "headers or footers that only repeat it. Describe any chart or photo in one short paragraph. Output "
-    "only the Markdown."
+    "side-by-side boxes or columns as separate sections, under the label printed on the page if there is "
+    "one; never invent labels. Keep section numbers exactly as printed. Describe any chart or photo in one "
+    "short paragraph. Output only the Markdown."
+)
+# Pages are sent one at a time, so the model is told where the page sits to handle headers and footers.
+TRANSCRIBE_FIRST_PAGE = (
+    " This is page 1 of {total}. Keep the document's title, version, date and classification once, as "
+    "plain text at the top, but leave out the page footer and page number."
+)
+TRANSCRIBE_LATER_PAGE = (
+    " This is page {number} of {total}. Leave out the running header and footer (logo, document or section "
+    "name, version, classification, page number): they were already taken from page 1."
 )
 # Docling before 2.141 breaks on rapidocr 3.10 (a removed constant) and then reports "No OCR engine found".
 OCR_MIN_DOCLING = (2, 141)
@@ -428,7 +437,19 @@ def transcribe_pages(src, vision):
     try:
         pages = render_pages(src, staged)
         say(f"transcribing {len(pages)} page image(s) with {vision.get('provider')} ({vision.get('model')})")
-        texts = [describe_image(vision, page, TRANSCRIBE_PROMPT) for page in pages]
+        texts = []
+        for number, page in enumerate(pages, 1):
+            where = TRANSCRIBE_FIRST_PAGE if number == 1 else TRANSCRIBE_LATER_PAGE
+            prompt = TRANSCRIBE_PROMPT + where.format(number=number, total=len(pages))
+            for attempt in range(1, VISION_ATTEMPTS + 1):
+                try:
+                    texts.append(describe_image(vision, page, prompt))
+                    break
+                except (urllib.error.URLError, OSError) as error:
+                    # Timeouts and dropped connections are usually transient; a bad key or URL fails every time.
+                    if attempt == VISION_ATTEMPTS or getattr(error, "code", 0) in (400, 401, 403, 404):
+                        raise
+                    say(f"page {number}: vision call failed ({error}); retrying ({attempt + 1}/{VISION_ATTEMPTS})")
     except (urllib.error.URLError, OSError, KeyError, IndexError, ValueError) as error:
         say(f"WARNING vision transcription failed ({error})")
         return None
